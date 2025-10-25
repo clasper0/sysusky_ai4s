@@ -1,4 +1,3 @@
-molecule_id,SMILES
 MOL_0001,COCCCn1nc(C)c2c(Cl)cc([C@@H](C)N(C(=O)[C@H]3CNCCO3)C3CC3)cc21
 MOL_0002,N[C@@H](CC(=O)N1CCSC1)Cc1cccnc1
 MOL_0003,O=C(NC(=O)c1ccccc1Cl)Nc1ccc(C(=O)O)cc1Cl
