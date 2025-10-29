@@ -16,12 +16,16 @@ import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import Data
-import rdkit
-from rdkit import Chem
-from rdkit.Chem import rdDepictor
-from rdkit.Chem.Draw import rdMolDraw2D
+import warnings
+with warnings.catch_warnings():
+    # warnings.filterwarnings("ignore", category=DeprecationWarning)
+    import rdkit
+    from rdkit import Chem
+    from rdkit.Chem import rdDepictor
+    from rdkit.Chem.Draw import rdMolDraw2D
 from typing import List, Tuple, Dict, Optional
 import matplotlib.pyplot as plt
+import os
 
 
 class SMILESToGraph:
@@ -179,10 +183,10 @@ class SMILESToGraph:
                 edge_features.append(bond_features)
                 edge_features.append(bond_features)
 
-            # 转换为PyTorch张量
-            x = torch.tensor(atom_features, dtype=torch.float32)
-            edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
-            edge_attr = torch.tensor(edge_features, dtype=torch.float32)
+            # 转换为PyTorch张量 (优化性能)
+            x = torch.tensor(np.array(atom_features), dtype=torch.float32)
+            edge_index = torch.tensor(np.array(edge_indices), dtype=torch.long).t().contiguous()
+            edge_attr = torch.tensor(np.array(edge_features), dtype=torch.float32)
 
             # 创建PyTorch Geometric Data对象
             data = Data(
@@ -272,8 +276,12 @@ def load_and_convert_data():
     print("=" * 60)
 
     try:
+        # 切换工作路径
+        work_dir = "/home/clasper/2509/sysusky_ai4s"
+        os.chdir(work_dir)
+
         # 读取候选分子数据
-        candidate_df = pd.read_csv('data/candidate.csv')
+        candidate_df = pd.read_csv('data/molecule.smi', sep = ",", header = None, names = ["id", "SMILES"])
         print(f"候选分子数据形状: {candidate_df.shape}")
         print(f"列名: {candidate_df.columns.tolist()}")
 
@@ -308,7 +316,7 @@ def load_and_convert_data():
 
 if __name__ == "__main__":
     # 运行演示
-    demonstrate_conversion()
+    # demonstrate_conversion()
 
     # 加载并转换实际数据
     graphs, df = load_and_convert_data()
