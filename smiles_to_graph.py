@@ -91,7 +91,7 @@ class SMILESToGraph:
         features.append(atom.GetTotalNumHs())
 
         # 5. 价电子数
-        features.append(atom.GetExplicitValence())
+        features.append(atom.GetValence(rdkit.Chem.ValenceType.EXPLICIT))
 
         # 6. 芳香性
         features.append(1 if atom.GetIsAromatic() else 0)

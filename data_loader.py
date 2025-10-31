@@ -183,6 +183,9 @@ class MolecularDataset(Dataset):
             num_nodes=1
         )
 
+
+        
+
     def get_statistics(self) -> Dict:
         """Get dataset statistics."""
         return {
@@ -193,6 +196,9 @@ class MolecularDataset(Dataset):
             "target_max": float(self.targets.max()),
             "smiles_length_mean": np.mean([len(s) for s in self.smiles_list])
         }
+
+
+
 
 
 class MolecularDataLoader:
