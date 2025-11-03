@@ -26,7 +26,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import warnings
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 
 from gcn_model import MolecularGCN, MultiTaskMolecularGCN
 from data_loader import MolecularDataLoader

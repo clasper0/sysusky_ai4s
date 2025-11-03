@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Union, Tuple
 import numpy as np
 from pathlib import Path
 import warnings
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 
 from gcn_model import MolecularGCN, MultiTaskMolecularGCN, create_model
 from smiles_to_graph import SMILESToGraph

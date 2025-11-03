@@ -23,7 +23,7 @@ import os
 import json
 from pathlib import Path
 import warnings
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 
 from model_utils import ModelManager, ModelPredictor
 from smiles_to_graph import SMILESToGraph

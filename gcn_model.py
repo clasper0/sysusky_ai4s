@@ -55,7 +55,7 @@ class MolecularGCN(nn.Module):
             use_residual: Whether to use residual connections
             attention_heads: Number of attention heads for GAT layers
         """
-        super(MolecularGCN, self).__init__()
+        super(MolecularGCN, self).__init__()    # 标准操作，调用父类 nn.Module 的构造函数
 
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims

@@ -25,7 +25,7 @@ from smiles_to_graph import SMILESToGraph
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import warnings
-warnings.filterwarnings("ignore")
+# warnings.filterwarnings("ignore")
 
 
 class MolecularDataset(Dataset):

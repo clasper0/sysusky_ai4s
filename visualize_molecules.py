@@ -17,7 +17,7 @@ from IPython.display import SVG, display
 import networkx as nx
 from smiles_to_graph import SMILESToGraph
 import warnings
-warnings.filterwarnings('ignore')
+# warnings.filterwarnings('ignore')
 
 
 class MoleculeVisualizer:
