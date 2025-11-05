@@ -1,301 +1,240 @@
+#!/usr/bin/env python3
 """
-最终版混合模型：结合图神经网络和分子描述符进行多任务pIC50预测
-===================================================================
+最终版混合分子预测模型
+====================
 
-该模块实现了结合图神经网络特征和传统分子描述符的混合模型，
-用于同时预测分子对多个靶点的pIC50值。
+该模块定义了一个结合图神经网络和分子描述符的混合模型，
+用于预测分子的多个属性（如pIC50值）。
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
-from torch_geometric.data import Data
-from typing import Dict, List, Optional, Tuple
-import pandas as pd
-import numpy as np
-
-
-class AttentionPooling(nn.Module):
-    """
-    注意力池化机制
-    """
-
-    def __init__(self, hidden_dim: int):
-        """
-        初始化注意力池化层
-        
-        Args:
-            hidden_dim: 隐藏层维度
-        """
-        super(AttentionPooling, self).__init__()
-
-        self.attention = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.Tanh(),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Softmax(dim=0)
-        )
-
-    def forward(self, x: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
-        """
-        前向传播
-        
-        Args:
-            x: 节点特征 [num_nodes, hidden_dim]
-            batch: 批次分配 [num_nodes]
-            
-        Returns:
-            torch.Tensor: 图级表示 [batch_size, hidden_dim]
-        """
-        batch_size = batch.max().item() + 1
-
-        # 计算注意力权重
-        attention_weights = self.attention(x)  # [num_nodes, 1]
-
-        # 创建批次掩码
-        batch_mask = F.one_hot(batch, num_classes=batch_size).float()  # [num_nodes, batch_size]
-
-        # 归一化注意力权重
-        attention_weights = attention_weights * batch_mask
-        attention_sums = attention_weights.sum(dim=0, keepdim=True)
-        attention_weights = attention_weights / (attention_sums + 1e-8)
-
-        # 加权求和节点特征
-        graph_embedding = torch.matmul(attention_weights.t(), x)  # [batch_size, hidden_dim]
-
-        return graph_embedding
-
-
-class MolecularGCN(nn.Module):
-    """
-    分子图卷积网络
-    """
-
-    def __init__(
-        self,
-        input_dim: int = 36,
-        hidden_dims: List[int] = [128, 256, 512],
-        dropout_rate: float = 0.2,
-        attention_heads: int = 4
-    ):
-        """
-        初始化分子GCN
-        
-        Args:
-            input_dim: 输入特征维度
-            hidden_dims: 隐藏层维度列表
-            dropout_rate: Dropout率
-            attention_heads: 注意力头数
-        """
-        super(MolecularGCN, self).__init__()
-        
-        self.dropout_rate = dropout_rate
-        self.hidden_dims = hidden_dims
-        
-        # 构建GCN层
-        self.gcn_layers = nn.ModuleList()
-        self.gat_layers = nn.ModuleList()
-
-        # 输入层
-        self.gcn_layers.append(GCNConv(input_dim, hidden_dims[0]))
-        self.gat_layers.append(GATConv(hidden_dims[0], hidden_dims[0] // attention_heads,
-                                       heads=attention_heads, dropout=dropout_rate))
-
-        # 隐藏层
-        for i in range(1, len(hidden_dims)):
-            self.gcn_layers.append(GCNConv(hidden_dims[i-1], hidden_dims[i]))
-            self.gat_layers.append(GATConv(hidden_dims[i], hidden_dims[i] // attention_heads,
-                                          heads=attention_heads, dropout=dropout_rate))
-            
-        # 注意力池化
-        self.attention_pooling = AttentionPooling(hidden_dims[-1])
-        
-    def forward(self, data: Data) -> torch.Tensor:
-        """
-        前向传播
-        
-        Args:
-            data: 图数据
-            
-        Returns:
-            torch.Tensor: 图表示特征
-        """
-        x, edge_index, batch = data.x, data.edge_index, data.batch
-        
-        # 存储初始输入用于残差连接
-        x_in = x
-
-        # 应用GCN和GAT层
-        for i, (gcn_layer, gat_layer) in enumerate(zip(self.gcn_layers, self.gat_layers)):
-            # GCN层
-            x = gcn_layer(x, edge_index)
-
-            # 应用激活和dropout
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout_rate, training=self.training)
-
-            # GAT层用于注意力机制
-            x_att = gat_layer(x, edge_index)
-            x = x + x_att  # 与注意力的残差连接
-
-            # 残差连接
-            if i < len(self.gcn_layers) - 1:
-                if x.size(-1) == x_in.size(-1):
-                    x = x + x_in
-                x_in = x
-
-        # 全局池化
-        graph_embedding = self.attention_pooling(x, batch)
-        mean_pool = global_mean_pool(x, batch)
-        max_pool = global_max_pool(x, batch)
-        add_pool = global_add_pool(x, batch)
-
-        # 拼接池化结果
-        combined_pool = torch.cat([graph_embedding, mean_pool, max_pool, add_pool], dim=1)
-        
-        return combined_pool
+from torch_geometric.nn import SAGPooling, TopKPooling
+import torch.nn.functional as F
 
 
 class HybridMolecularPredictor(nn.Module):
     """
-    混合分子预测器：结合图神经网络和分子描述符特征
+    混合分子预测器
+    
+    该模型结合了图神经网络和分子描述符来预测分子属性。
     """
-
-    def __init__(
-        self,
-        gcn_input_dim: int = 36,
-        gcn_hidden_dims: List[int] = [128, 256, 512],
-        descriptor_dim: int = 0,  # 分子描述符特征维度
-        num_targets: int = 5,     # 靶点数量
-        gcn_dropout_rate: float = 0.2,
-        fusion_hidden_dims: List[int] = [512, 256],  # 融合层隐藏维度
-        fusion_dropout_rate: float = 0.1
-    ):
+    
+    def __init__(self, gcn_input_dim=36, gcn_hidden_dims=[64, 128], 
+                 descriptor_dim=4, fusion_hidden_dims=[640, 256], num_targets=5):
         """
         初始化混合分子预测器
         
-        Args:
-            gcn_input_dim: GCN输入特征维度
-            gcn_hidden_dims: GCN隐藏层维度列表
-            descriptor_dim: 分子描述符特征维度
-            num_targets: 靶点数量（输出维度）
-            gcn_dropout_rate: GCN Dropout率
-            fusion_hidden_dims: 融合层隐藏维度列表
-            fusion_dropout_rate: 融合层Dropout率
+        参数:
+            gcn_input_dim (int): GCN输入维度（原子特征数）
+            gcn_hidden_dims (list): GCN隐藏层维度列表
+            descriptor_dim (int): 分子描述符维度
+            fusion_hidden_dims (list): 融合层隐藏维度列表 (需要与实际输入维度匹配)
+            num_targets (int): 目标数量
         """
         super(HybridMolecularPredictor, self).__init__()
         
+        self.gcn_input_dim = gcn_input_dim
+        self.gcn_hidden_dims = gcn_hidden_dims
         self.descriptor_dim = descriptor_dim
+        self.fusion_hidden_dims = fusion_hidden_dims
         self.num_targets = num_targets
         
-        # 图神经网络分支
-        self.gcn_branch = MolecularGCN(
-            input_dim=gcn_input_dim,
-            hidden_dims=gcn_hidden_dims,
-            dropout_rate=gcn_dropout_rate
+        # 构建GCN层
+        self.gcn_layers = nn.ModuleList()
+        self.gat_layers = nn.ModuleList()
+        
+        # 输入层
+        input_dim = gcn_input_dim
+        
+        # 构建隐藏层
+        for hidden_dim in gcn_hidden_dims:
+            # 添加GCN层
+            self.gcn_layers.append(GCNConv(input_dim, hidden_dim))
+            
+            # 添加对应的GAT层
+            self.gat_layers.append(GATConv(input_dim, hidden_dim, heads=4, concat=False))
+            
+            input_dim = hidden_dim
+        
+        # 注意力池化层
+        self.attention_pool = nn.Sequential(
+            nn.Linear(gcn_hidden_dims[-1], 1),
+            nn.Tanh()
         )
         
-        # 计算融合层输入维度
-        gcn_output_dim = gcn_hidden_dims[-1] * 4  # 4种池化方式的拼接结果
-        fusion_input_dim = gcn_output_dim + descriptor_dim
+        # 图表示的维度（平均池化+最大池化+求和池化+注意力池化）
+        graph_embedding_dim = gcn_hidden_dims[-1] * 4  # 128 * 4 = 512
         
-        # 构建融合层
-        fusion_layers = []
-        prev_dim = fusion_input_dim
-        
-        for hidden_dim in fusion_hidden_dims:
-            fusion_layers.extend([
-                nn.Linear(prev_dim, hidden_dim),
+        # 分子描述符处理网络
+        if descriptor_dim > 0:
+            self.descriptor_network = nn.Sequential(
+                nn.Linear(descriptor_dim, 128),
                 nn.ReLU(),
-                nn.Dropout(fusion_dropout_rate)
-            ])
+                nn.BatchNorm1d(128),
+                nn.Dropout(0.2),
+                nn.Linear(128, 128),
+                nn.ReLU(),
+                nn.BatchNorm1d(128),
+                nn.Dropout(0.2)
+            )
+            fusion_input_dim = graph_embedding_dim + 128  # 512 + 128 = 640
+        else:
+            self.descriptor_network = None
+            fusion_input_dim = graph_embedding_dim
+        
+        # 融合网络 - 修复维度配置
+        self.fusion_layers = nn.ModuleList()
+        
+        # 第一层：fusion_input_dim -> fusion_hidden_dims[0]
+        self.fusion_layers.append(nn.Linear(fusion_input_dim, fusion_hidden_dims[0]))
+        self.fusion_layers.append(nn.ReLU())
+        self.fusion_layers.append(nn.BatchNorm1d(fusion_hidden_dims[0]))
+        self.fusion_layers.append(nn.Dropout(0.3))
+        
+        # 后续层
+        prev_dim = fusion_hidden_dims[0]
+        for hidden_dim in fusion_hidden_dims[1:]:
+            self.fusion_layers.append(nn.Linear(prev_dim, hidden_dim))
+            self.fusion_layers.append(nn.ReLU())
+            self.fusion_layers.append(nn.BatchNorm1d(hidden_dim))
+            self.fusion_layers.append(nn.Dropout(0.3))
             prev_dim = hidden_dim
+        
+        # 任务特定的输出头
+        self.task_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(prev_dim, 64),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(64, 32),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(32, 1)
+            ) for _ in range(num_targets)
+        ])
+    
+    def gcn_forward(self, x, edge_index, edge_attr, batch):
+        """
+        GCN前向传播
+        
+        参数:
+            x (Tensor): 节点特征
+            edge_index (LongTensor): 边索引
+            edge_attr (Tensor): 边属性
+            batch (LongTensor): 批次信息
             
-        # 输出层
-        fusion_layers.append(nn.Linear(prev_dim, num_targets))
+        返回:
+            Tensor: 图级别的表示
+        """
+        # 多层GCN和GAT
+        for gcn_layer, gat_layer in zip(self.gcn_layers, self.gat_layers):
+            # GCN分支
+            gcn_out = gcn_layer(x, edge_index)
+            gcn_out = F.relu(gcn_out)
+            
+            # GAT分支
+            gat_out = gat_layer(x, edge_index)
+            gat_out = F.relu(gat_out)
+            
+            # 融合两个分支
+            x = (gcn_out + gat_out) / 2
+            
+            # 添加残差连接（如果维度匹配）
+            if x.size(1) == gcn_out.size(1):
+                x = x + gcn_out
+            
+            # dropout
+            x = F.dropout(x, p=0.2, training=self.training)
         
-        self.fusion_network = nn.Sequential(*fusion_layers)
+        # 多种池化策略
+        mean_pooled = global_mean_pool(x, batch)
+        max_pooled = global_max_pool(x, batch)
+        sum_pooled = global_add_pool(x, batch)
         
-        # 初始化权重
-        self._initialize_weights()
+        # 注意力池化
+        attention_weights = self.attention_pool(x)
+        attention_weights = torch.softmax(attention_weights, dim=0)
+        attention_pooled = global_add_pool(x * attention_weights, batch)
         
-    def _initialize_weights(self):
-        """初始化模型权重"""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    def forward(self, graph_data, descriptor_features=None):
+        # 连接所有池化结果
+        graph_embedding = torch.cat([mean_pooled, max_pooled, sum_pooled, attention_pooled], dim=1)
+        
+        return graph_embedding
+    
+    def descriptor_forward(self, descriptors):
+        """
+        分子描述符前向传播
+        
+        参数:
+            descriptors (Tensor): 分子描述符
+            
+        返回:
+            Tensor: 处理后的描述符表示
+        """
+        if self.descriptor_network is not None and descriptors is not None:
+            # 检查描述符是否为空
+            if descriptors.numel() > 0 and len(descriptors.shape) > 1 and descriptors.shape[1] > 0:
+                return self.descriptor_network(descriptors)
+        return None
+    
+    def fusion_forward(self, graph_features, descriptor_features=None):
+        """
+        融合前向传播
+        
+        参数:
+            graph_features (Tensor): 图特征
+            descriptor_features (Tensor): 描述符特征
+            
+        返回:
+            Tensor: 融合后的特征
+        """
+        # 如果有描述符特征，则拼接
+        if descriptor_features is not None and descriptor_features.numel() > 0:
+            combined_features = torch.cat([graph_features, descriptor_features], dim=1)
+        else:
+            combined_features = graph_features
+        
+        # 通过融合网络
+        x = combined_features
+        for layer in self.fusion_layers:
+            x = layer(x)
+        
+        return x
+    
+    def forward(self, data):
         """
         前向传播
         
-        Args:
-            graph_data: 图数据 (PyTorch Geometric Data对象)
-            descriptor_features: 分子描述符特征 (torch.Tensor, 可选)
+        参数:
+            data: 包含图结构和分子描述符的数据对象
             
-        Returns:
-            torch.Tensor: 预测的多靶点pIC50值 [batch_size, num_targets]
+        返回:
+            Tensor: 预测结果
         """
-        # 通过GCN分支提取图特征
-        graph_features = self.gcn_branch(graph_data)  # [batch_size, gcn_output_dim]
+        # 从数据对象中提取图结构数据
+        x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
         
-        # 如果提供了分子描述符特征，则与图特征拼接
-        if descriptor_features is not None and self.descriptor_dim > 0:
-            # 确保批次大小匹配
-            if descriptor_features.size(0) != graph_features.size(0):
-                # 通过ptr计算实际批次大小
-                actual_batch_size = graph_features.size(0)
-                descriptor_features = descriptor_features[:actual_batch_size]
-            # 拼接图特征和描述符特征
-            combined_features = torch.cat([graph_features, descriptor_features], dim=1)
-        else:
-            # 仅使用图特征
-            combined_features = graph_features
-            
-        # 通过融合网络预测多靶点pIC50
-        predictions = self.fusion_network(combined_features)
+        # 获取分子描述符（如果有）
+        descriptors = getattr(data, 'descriptors', None)
         
-        return predictions
-
-
-def load_descriptor_data(data_path: str, descriptor_cols: List[str]) -> np.ndarray:
-    """
-    加载分子描述符数据
-    
-    Args:
-        data_path: 数据文件路径
-        descriptor_cols: 描述符列名列表
+        # 图神经网络前向传播
+        graph_features = self.gcn_forward(x, edge_index, edge_attr, batch)
         
-    Returns:
-        np.ndarray: 描述符特征矩阵
-    """
-    df = pd.read_csv(data_path)
-    
-    # 提取描述符特征
-    descriptor_features = df[descriptor_cols].values.astype(np.float32)
-    
-    return descriptor_features
-
-
-# 示例用法
-if __name__ == "__main__":
-    # 创建混合模型示例
-    model = HybridMolecularPredictor(
-        gcn_input_dim=36,
-        gcn_hidden_dims=[128, 256, 512],
-        descriptor_dim=10,  # 假设有10个描述符特征
-        num_targets=5
-    )
-    
-    print("混合模型架构:")
-    print(model)
-    
-    # 计算参数数量
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    print(f"\n总参数数量: {total_params:,}")
-    print(f"可训练参数数量: {trainable_params:,}")
+        # 分子描述符前向传播
+        descriptor_features = self.descriptor_forward(descriptors)
+        
+        # 融合特征
+        fused_features = self.fusion_forward(graph_features, descriptor_features)
+        
+        # 任务特定的输出头
+        outputs = []
+        for head in self.task_heads:
+            output = head(fused_features)
+            outputs.append(output)
+        
+        # 连接所有输出
+        final_output = torch.cat(outputs, dim=1)
+        
+        return final_output

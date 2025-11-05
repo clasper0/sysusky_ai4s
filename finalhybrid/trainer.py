@@ -1,642 +1,446 @@
 """
-Training Loop and Evaluation Metrics for Molecular GCN
-======================================================
+模型训练器模块
+==============
 
-This module implements the training loop, evaluation metrics,
-and model checkpointing for the molecular GCN model.
-
-Key Components:
-1. Training and validation loops
-2. Evaluation metrics (RMSE, MAE, R²)
-3. Early stopping and model checkpointing
-4. Learning rate scheduling
-5. Experiment tracking utilities
+该模块提供了一个完整的训练框架，包括训练循环、验证、测试和模型保存功能。
 """
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
-import numpy as np
-from typing import Dict, List, Tuple, Optional, Union
 import os
-import json
-import time
-from datetime import datetime
-import matplotlib.pyplot as plt
+import numpy as np
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import warnings
-warnings.filterwarnings("ignore")
-
-from gcn_model import MolecularGCN, MultiTaskMolecularGCN
-from data_loader import MolecularDataLoader
+import matplotlib.pyplot as plt
+import json
+import pandas as pd
+from datetime import datetime
 
 
 class MolecularTrainer:
     """
-    Trainer class for molecular GCN models with comprehensive
-    training utilities and evaluation metrics.
+    分子模型训练器
+    
+    该类封装了模型训练的所有功能，包括训练循环、验证、测试和模型保存。
     """
-
-    def __init__(
-        self,
-        model: Union[MolecularGCN, MultiTaskMolecularGCN],
-        train_loader: MolecularDataLoader,
-        val_loader: MolecularDataLoader,
-        test_loader: Optional[MolecularDataLoader] = None,
-        device: str = "auto",
-        experiment_dir: str = "experiments",
-        experiment_name: str = None
-    ):
+    
+    def __init__(self, model, train_loader, val_loader, test_loader, 
+                 device="cpu", experiment_dir="experiments", experiment_name=None):
         """
-        Initialize the trainer.
-
-        Args:
-            model: GCN model to train
-            train_loader: Training data loader
-            val_loader: Validation data loader
-            test_loader: Test data loader (optional)
-            device: Device to use for training ("cpu", "cuda", or "auto")
-            experiment_dir: Directory to save experiment results
-            experiment_name: Name for this experiment
+        初始化训练器
+        
+        参数:
+            model (nn.Module): 要训练的模型
+            train_loader (DataLoader): 训练数据加载器
+            val_loader (DataLoader): 验证数据加载器
+            test_loader (DataLoader): 测试数据加载器
+            device (str): 训练设备 ("cpu" 或 "cuda")
+            experiment_dir (str): 实验结果保存目录
+            experiment_name (str): 实验名称
         """
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.test_loader = test_loader
-
-        # Set device
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
+        self.experiment_dir = experiment_dir
+        
+        # 设置实验名称和路径
+        if experiment_name is None:
+            self.experiment_name = f"experiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         else:
-            self.device = torch.device(device)
-
+            self.experiment_name = experiment_name
+            
+        self.experiment_path = os.path.join(self.experiment_dir, self.experiment_name)
+        
+        # 创建实验目录
+        os.makedirs(self.experiment_path, exist_ok=True)
+        
+        # 初始化优化器和损失函数
+        self.optimizer = None
+        self.criterion = nn.MSELoss()
+        
+        # 移动模型到指定设备
         self.model.to(self.device)
         print(f"Training on device: {self.device}")
-
-        # Experiment setup
-        self.experiment_dir = experiment_dir
-        self.experiment_name = experiment_name or f"experiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        self.experiment_path = os.path.join(experiment_dir, self.experiment_name)
-        os.makedirs(self.experiment_path, exist_ok=True)
-
-        # Training history
+        
+        # 训练历史记录
         self.train_history = {
-            "train_loss": [],
-            "val_loss": [],
-            "train_rmse": [],
-            "val_rmse": [],
-            "train_mae": [],
-            "val_mae": [],
-            "train_r2": [],
-            "val_r2": [],
-            "learning_rate": [],
-            "epoch_times": []
+            'train_loss': [],
+            'val_loss': [],
+            'train_rmse': [],
+            'val_rmse': [],
+            'train_r2': [],
+            'val_r2': [],
+            'lr': []
         }
-
-        # Best model tracking
-        self.best_val_loss = float("inf")
-        self.best_epoch = 0
-        self.patience_counter = 0
-
-        # Save initial config
-        self._save_config()
-
-    def _save_config(self):
-        """Save experiment configuration."""
-        config = {
-            "model_type": type(self.model).__name__,
-            "model_params": {
-                "input_dim": getattr(self.model, "input_dim", None),
-                "hidden_dims": getattr(self.model, "hidden_dims", None),
-                "output_dim": getattr(self.model, "output_dim", None),
-                "dropout_rate": getattr(self.model, "dropout_rate", None)
-            },
-            "dataset_sizes": {
-                "train": len(self.train_loader.dataset),
-                "val": len(self.val_loader.dataset),
-                "test": len(self.test_loader.dataset) if self.test_loader else 0
-            },
-            "device": str(self.device),
-            "experiment_path": self.experiment_path
-        }
-
-        config_path = os.path.join(self.experiment_path, "config.json")
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
-
-    def setup_optimizer(
-        self,
-        optimizer_name: str = "adam",
-        learning_rate: float = 0.001,
-        weight_decay: float = 1e-5,
-        **optimizer_kwargs
-    ) -> optim.Optimizer:
+    
+    def train_epoch(self):
         """
-        Setup optimizer for training.
-
-        Args:
-            optimizer_name: Name of optimizer ("adam", "sgd", "adamw")
-            learning_rate: Learning rate
-            weight_decay: Weight decay for regularization
-            **optimizer_kwargs: Additional optimizer parameters
-
-        Returns:
-            Configured optimizer
-        """
-        if optimizer_name.lower() == "adam":
-            optimizer = optim.Adam(
-                self.model.parameters(),
-                lr=learning_rate,
-                weight_decay=weight_decay,
-                **optimizer_kwargs
-            )
-        elif optimizer_name.lower() == "adamw":
-            optimizer = optim.AdamW(
-                self.model.parameters(),
-                lr=learning_rate,
-                weight_decay=weight_decay,
-                **optimizer_kwargs
-            )
-        elif optimizer_name.lower() == "sgd":
-            optimizer = optim.SGD(
-                self.model.parameters(),
-                lr=learning_rate,
-                weight_decay=weight_decay,
-                momentum=0.9,
-                **optimizer_kwargs
-            )
-        else:
-            raise ValueError(f"Unknown optimizer: {optimizer_name}")
-
-        self.optimizer = optimizer
-        return optimizer
-
-    def setup_scheduler(
-        self,
-        scheduler_name: str = "plateau",
-        **scheduler_kwargs
-    ) -> optim.lr_scheduler._LRScheduler:
-        """
-        Setup learning rate scheduler.
-
-        Args:
-            scheduler_name: Name of scheduler ("plateau", "cosine", "step")
-            **scheduler_kwargs: Additional scheduler parameters
-
-        Returns:
-            Configured scheduler
-        """
-        if scheduler_name.lower() == "plateau":
-            scheduler = ReduceLROnPlateau(
-                self.optimizer,
-                mode="min",
-                factor=0.5,
-                patience=10,
-                verbose=True,
-                **scheduler_kwargs
-            )
-        elif scheduler_name.lower() == "cosine":
-            scheduler = CosineAnnealingLR(
-                self.optimizer,
-                T_max=100,
-                **scheduler_kwargs
-            )
-        elif scheduler_name.lower() == "step":
-            scheduler = optim.lr_scheduler.StepLR(
-                self.optimizer,
-                step_size=30,
-                gamma=0.1,
-                **scheduler_kwargs
-            )
-        else:
-            raise ValueError(f"Unknown scheduler: {scheduler_name}")
-
-        self.scheduler = scheduler
-        return scheduler
-
-    def compute_metrics(self, predictions: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
-        """
-        Compute evaluation metrics.
-
-        Args:
-            predictions: Model predictions
-            targets: Ground truth targets
-
-        Returns:
-            Dictionary of computed metrics
-        """
-        # Convert to numpy
-        pred_np = predictions.cpu().detach().numpy()
-        target_np = targets.cpu().detach().numpy()
-
-        # Compute metrics
-        mse = mean_squared_error(target_np, pred_np)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(target_np, pred_np)
-        r2 = r2_score(target_np, pred_np)
-
-        return {
-            "mse": mse,
-            "rmse": rmse,
-            "mae": mae,
-            "r2": r2
-        }
-
-    def train_epoch(self) -> Dict[str, float]:
-        """
-        Train the model for one epoch.
-
-        Returns:
-            Dictionary of training metrics
+        训练一个epoch
+        
+        返回:
+            tuple: (平均损失, RMSE, R²)
         """
         self.model.train()
-        total_loss = 0.0
-        all_predictions = []
+        total_loss = 0
+        all_preds = []
         all_targets = []
-
-        epoch_start_time = time.time()
-
+        
         for batch in self.train_loader:
+            # 将数据移动到设备
             batch = batch.to(self.device)
-            # 获取目标值并确保正确处理
+            
+            # 获取目标值
             targets = batch.y
-
-            # Zero gradients
+            
+            # 清零梯度
             self.optimizer.zero_grad()
-
-            # Forward pass
-            model_output = self.model(batch)
             
-            # 处理模型输出，可能是张量或字典
-            if isinstance(model_output, dict):
-                # 多任务模型输出字典，我们需要获取预测值
-                # 我们将所有任务的预测值连接在一起
-                predictions_list = list(model_output.values())
-                predictions = torch.stack(predictions_list, dim=1)  # [batch_size, num_tasks]
-            else:
-                # 单任务模型直接输出张量
-                predictions = model_output
-
-            # 确保目标值维度与预测值匹配
-            if len(predictions.shape) == 2:  # 多任务情况
-                if len(targets.shape) == 1:
-                    # 目标值是一维的，需要重新组织
-                    batch_size = predictions.shape[0]
-                    num_tasks = predictions.shape[1]
-                    if targets.shape[0] == batch_size * num_tasks:
-                        # 目标值是展开的，需要重新组织成 [batch_size, num_tasks]
-                        targets = targets.view(batch_size, num_tasks)
-                elif len(targets.shape) == 2:
-                    # 目标值已经是二维的，确保形状匹配
-                    if targets.shape[0] != predictions.shape[0]:
-                        targets = targets[:predictions.shape[0]]
-                    if targets.shape[1] != predictions.shape[1]:
-                        # 只取前几个任务或填充
-                        min_tasks = min(targets.shape[1], predictions.shape[1])
-                        targets = targets[:, :min_tasks]
-                        if predictions.shape[1] > min_tasks:
-                            predictions = predictions[:, :min_tasks]
-            else:  # 单任务情况
-                if len(targets.shape) == 2 and targets.shape[1] > 1:
-                    # 只取第一个任务的目标值
-                    targets = targets[:, 0]
-                elif len(targets.shape) == 2 and targets.shape[0] != predictions.shape[0]:
-                    # 调整目标值形状
-                    targets = targets[:predictions.shape[0], 0]
-
-            # 确保预测值和目标值都在设备上并类型匹配
-            predictions = predictions.to(self.device)
-            targets = targets.to(self.device)
+            # 前向传播
+            outputs = self.model(batch)
             
-            # 确保数据类型匹配
-            if predictions.dtype != targets.dtype:
-                targets = targets.to(predictions.dtype)
-
-            # Compute loss
-            loss = nn.MSELoss()(predictions, targets)
-
-            # Backward pass
+            # 确保输出和目标形状匹配
+            if targets.dim() == 1:
+                targets = targets.view(-1, 1)
+            
+            if outputs.shape != targets.shape:
+                # 如果形状不匹配，尝试调整
+                if outputs.size(0) == targets.size(0):
+                    # 保持批次大小一致，调整特征维度
+                    targets = targets.view(outputs.shape)
+                else:
+                    print(f"形状不匹配: outputs {outputs.shape}, targets {targets.shape}")
+                    raise ValueError("输出和目标张量形状不匹配")
+            
+            # 计算损失
+            loss = self.criterion(outputs, targets)
+            
+            # 反向传播
             loss.backward()
-
-            # Gradient clipping to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-
-            # Update weights
+            
+            # 更新参数
             self.optimizer.step()
-
-            # Accumulate metrics
-            total_loss += loss.item() * targets.shape[0]  # 使用实际样本数
-            all_predictions.append(predictions.view(-1))  # 展平所有预测值
-            all_targets.append(targets.view(-1))  # 展平所有目标值
-
-        # Compute epoch metrics
-        all_predictions = torch.cat(all_predictions)
-        all_targets = torch.cat(all_targets)
-        metrics = self.compute_metrics(all_predictions, all_targets)
-
-        # Add average loss
-        avg_loss = total_loss / len(self.train_loader.dataset)
-        metrics["loss"] = avg_loss
-
-        # Record epoch time
-        epoch_time = time.time() - epoch_start_time
-        metrics["epoch_time"] = epoch_time
-
-        return metrics
-
-    def validate_epoch(self, data_loader: MolecularDataLoader) -> Dict[str, float]:
+            
+            # 累积损失和预测结果
+            total_loss += loss.item()
+            all_preds.extend(outputs.detach().cpu().numpy())
+            all_targets.extend(targets.detach().cpu().numpy())
+        
+        # 计算平均损失
+        avg_loss = total_loss / len(self.train_loader)
+        
+        # 计算RMSE和R²
+        all_preds = np.array(all_preds)
+        all_targets = np.array(all_targets)
+        
+        # 确保数组形状正确
+        if all_preds.ndim == 1:
+            all_preds = all_preds.reshape(-1, 1)
+        if all_targets.ndim == 1:
+            all_targets = all_targets.reshape(-1, 1)
+        
+        rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
+        r2 = r2_score(all_targets, all_preds)
+        
+        return avg_loss, rmse, r2
+    
+    def validate(self):
         """
-        Validate the model for one epoch.
-
-        Args:
-            data_loader: Data loader for validation/test
-
-        Returns:
-            Dictionary of validation metrics
+        验证模型
+        
+        返回:
+            tuple: (平均损失, RMSE, R²)
         """
         self.model.eval()
-        total_loss = 0.0
-        all_predictions = []
+        total_loss = 0
+        all_preds = []
         all_targets = []
-
+        
         with torch.no_grad():
-            for batch in data_loader:
+            for batch in self.val_loader:
+                # 将数据移动到设备
                 batch = batch.to(self.device)
-                # 获取目标值并确保正确处理
+                
+                # 获取目标值
                 targets = batch.y
-
-                # Forward pass
-                model_output = self.model(batch)
                 
-                # 处理模型输出，可能是张量或字典
-                if isinstance(model_output, dict):
-                    # 多任务模型输出字典，我们需要获取预测值
-                    # 我们将所有任务的预测值连接在一起
-                    predictions_list = list(model_output.values())
-                    predictions = torch.stack(predictions_list, dim=1)  # [batch_size, num_tasks]
-                else:
-                    # 单任务模型直接输出张量
-                    predictions = model_output
-
-                # 确保目标值维度与预测值匹配
-                if len(predictions.shape) == 2:  # 多任务情况
-                    if len(targets.shape) == 1:
-                        # 目标值是一维的，需要重新组织
-                        batch_size = predictions.shape[0]
-                        num_tasks = predictions.shape[1]
-                        if targets.shape[0] == batch_size * num_tasks:
-                            # 目标值是展开的，需要重新组织成 [batch_size, num_tasks]
-                            targets = targets.view(batch_size, num_tasks)
-                    elif len(targets.shape) == 2:
-                        # 目标值已经是二维的，确保形状匹配
-                        if targets.shape[0] != predictions.shape[0]:
-                            targets = targets[:predictions.shape[0]]
-                        if targets.shape[1] != predictions.shape[1]:
-                            # 只取前几个任务或填充
-                            min_tasks = min(targets.shape[1], predictions.shape[1])
-                            targets = targets[:, :min_tasks]
-                            if predictions.shape[1] > min_tasks:
-                                predictions = predictions[:, :min_tasks]
-                else:  # 单任务情况
-                    if len(targets.shape) == 2 and targets.shape[1] > 1:
-                        # 只取第一个任务的目标值
-                        targets = targets[:, 0]
-                    elif len(targets.shape) == 2 and targets.shape[0] != predictions.shape[0]:
-                        # 调整目标值形状
-                        targets = targets[:predictions.shape[0], 0]
-
-                # 确保预测值和目标值都在设备上并类型匹配
-                predictions = predictions.to(self.device)
-                targets = targets.to(self.device)
+                # 前向传播
+                outputs = self.model(batch)
                 
-                # 确保数据类型匹配
-                if predictions.dtype != targets.dtype:
-                    targets = targets.to(predictions.dtype)
-
-                # Compute loss
-                loss = nn.MSELoss()(predictions, targets)
-
-                # Accumulate metrics
-                total_loss += loss.item() * targets.shape[0]  # 使用实际样本数
-                all_predictions.append(predictions.view(-1))  # 展平所有预测值
-                all_targets.append(targets.view(-1))  # 展平所有目标值
-
-        # Compute epoch metrics
-        all_predictions = torch.cat(all_predictions)
-        all_targets = torch.cat(all_targets)
-        metrics = self.compute_metrics(all_predictions, all_targets)
-
-        # Add average loss
-        avg_loss = total_loss / len(data_loader.dataset)
-        metrics["loss"] = avg_loss
-
-        return metrics
-
-    def save_checkpoint(
-        self,
-        epoch: int,
-        is_best: bool = False,
-        save_optimizer: bool = True
-    ):
+                # 确保输出和目标形状匹配
+                if targets.dim() == 1:
+                    targets = targets.view(-1, 1)
+                
+                if outputs.shape != targets.shape:
+                    # 如果形状不匹配，尝试调整
+                    if outputs.size(0) == targets.size(0):
+                        # 保持批次大小一致，调整特征维度
+                        targets = targets.view(outputs.shape)
+                    else:
+                        print(f"形状不匹配: outputs {outputs.shape}, targets {targets.shape}")
+                        raise ValueError("输出和目标张量形状不匹配")
+                
+                # 计算损失
+                loss = self.criterion(outputs, targets)
+                total_loss += loss.item()
+                
+                # 收集预测结果和目标值
+                all_preds.extend(outputs.cpu().numpy())
+                all_targets.extend(targets.cpu().numpy())
+        
+        # 计算平均损失
+        avg_loss = total_loss / len(self.val_loader)
+        
+        # 计算RMSE和R²
+        all_preds = np.array(all_preds)
+        all_targets = np.array(all_targets)
+        
+        # 确保数组形状正确
+        if all_preds.ndim == 1:
+            all_preds = all_preds.reshape(-1, 1)
+        if all_targets.ndim == 1:
+            all_targets = all_targets.reshape(-1, 1)
+        
+        rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
+        r2 = r2_score(all_targets, all_preds)
+        
+        return avg_loss, rmse, r2
+    
+    def train(self, num_epochs=100, patience=10, min_delta=1e-4, save_every=10):
         """
-        Save model checkpoint.
-
-        Args:
-            epoch: Current epoch number
-            is_best: Whether this is the best model so far
-            save_optimizer: Whether to save optimizer state
-        """
-        checkpoint = {
-            "epoch": epoch,
-            "model_state_dict": self.model.state_dict(),
-            "best_val_loss": self.best_val_loss,
-            "best_epoch": self.best_epoch,
-            "train_history": self.train_history
-        }
-
-        if save_optimizer:
-            checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
-            if hasattr(self, "scheduler"):
-                checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
-
-        # Save latest checkpoint
-        checkpoint_path = os.path.join(self.experiment_path, "latest_checkpoint.pth")
-        torch.save(checkpoint, checkpoint_path)
-
-        # Save best model
-        if is_best:
-            best_path = os.path.join(self.experiment_path, "best_model.pth")
-            torch.save(checkpoint, best_path)
-            print(f"New best model saved with validation loss: {self.best_val_loss:.4f}")
-
-    def load_checkpoint(self, checkpoint_path: str):
-        """
-        Load model checkpoint.
-
-        Args:
-            checkpoint_path: Path to checkpoint file
-        """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-
-        if "optimizer_state_dict" in checkpoint and hasattr(self, "optimizer"):
-            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-        if "scheduler_state_dict" in checkpoint and hasattr(self, "scheduler"):
-            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-
-        self.best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-        self.best_epoch = checkpoint.get("best_epoch", 0)
-        self.train_history = checkpoint.get("train_history", {})
-
-        print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', 0)}")
-
-    def train(
-        self,
-        num_epochs: int,
-        patience: int = 50,
-        min_delta: float = 1e-4,
-        save_every: int = 10
-    ):
-        """
-        Train the model.
-
-        Args:
-            num_epochs: Number of training epochs
-            patience: Early stopping patience
-            min_delta: Minimum improvement for early stopping
-            save_every: Save checkpoint every N epochs
+        训练模型
+        
+        参数:
+            num_epochs (int): 训练轮数
+            patience (int): 早停耐心值
+            min_delta (float): 早停最小改善值
+            save_every (int): 每N个epoch保存一次模型
         """
         print(f"Starting training for {num_epochs} epochs...")
         print(f"Patience: {patience}, Min delta: {min_delta}")
-
-        for epoch in range(1, num_epochs + 1):
-            # Training phase
-            train_metrics = self.train_epoch()
-
-            # Validation phase
-            val_metrics = self.validate_epoch(self.val_loader)
-
-            # Update learning rate
-            if hasattr(self, "scheduler"):
-                if isinstance(self.scheduler, ReduceLROnPlateau):
-                    self.scheduler.step(val_metrics["loss"])
-                else:
-                    self.scheduler.step()
-
-            # Record history
-            self.train_history["train_loss"].append(train_metrics["loss"])
-            self.train_history["val_loss"].append(val_metrics["loss"])
-            self.train_history["train_rmse"].append(train_metrics["rmse"])
-            self.train_history["val_rmse"].append(val_metrics["rmse"])
-            self.train_history["train_mae"].append(train_metrics["mae"])
-            self.train_history["val_mae"].append(val_metrics["mae"])
-            self.train_history["train_r2"].append(train_metrics["r2"])
-            self.train_history["val_r2"].append(val_metrics["r2"])
-            self.train_history["learning_rate"].append(self.optimizer.param_groups[0]["lr"])
-            self.train_history["epoch_times"].append(train_metrics["epoch_time"])
-
-            # Check for improvement
-            if val_metrics["loss"] < self.best_val_loss - min_delta:
-                self.best_val_loss = val_metrics["loss"]
-                self.best_epoch = epoch
-                self.patience_counter = 0
-                is_best = True
+        
+        if self.optimizer is None:
+            raise ValueError("请先设置优化器 (trainer.optimizer = ...)")
+        
+        # 初始化早停变量
+        best_val_loss = float('inf')
+        patience_counter = 0
+        best_model_path = os.path.join(self.experiment_path, "best_model.pth")
+        
+        # 训练循环
+        for epoch in range(num_epochs):
+            start_time = datetime.now()
+            
+            # 训练一个epoch
+            train_loss, train_rmse, train_r2 = self.train_epoch()
+            
+            # 验证
+            val_loss, val_rmse, val_r2 = self.validate()
+            
+            # 记录学习率
+            current_lr = self.optimizer.param_groups[0]['lr']
+            
+            # 更新训练历史
+            self.train_history['train_loss'].append(train_loss)
+            self.train_history['val_loss'].append(val_loss)
+            self.train_history['train_rmse'].append(train_rmse)
+            self.train_history['val_rmse'].append(val_rmse)
+            self.train_history['train_r2'].append(train_r2)
+            self.train_history['val_r2'].append(val_r2)
+            self.train_history['lr'].append(current_lr)
+            
+            # 计算epoch时间
+            epoch_time = (datetime.now() - start_time).total_seconds()
+            
+            # 打印训练信息
+            improvement = best_val_loss - val_loss
+            best_indicator = " *" if improvement > min_delta else ""
+            print(f"Epoch {epoch+1:3d} | "
+                  f"Train Loss: {train_loss:.4f} | "
+                  f"Val Loss: {val_loss:.4f} | "
+                  f"Train RMSE: {train_rmse:.4f} | "
+                  f"Val RMSE: {val_rmse:.4f} | "
+                  f"Train R²: {train_r2:6.3f} | "
+                  f"Val R²: {val_r2:6.3f} | "
+                  f"LR: {current_lr:.6f} | "
+                  f"Time: {epoch_time:.1f}s{best_indicator}")
+            
+            # 早停检查
+            if improvement > min_delta:
+                best_val_loss = val_loss
+                patience_counter = 0
+                # 保存最佳模型
+                torch.save(self.model.state_dict(), best_model_path)
+                print(f"New best model saved with validation loss: {val_loss:.4f}")
             else:
-                self.patience_counter += 1
-                is_best = False
-
-            # Save checkpoint
-            if epoch % save_every == 0 or is_best:
-                self.save_checkpoint(epoch, is_best)
-
-            # Print progress
-            print(f"Epoch {epoch:3d} | "
-                  f"Train Loss: {train_metrics['loss']:.4f} | "
-                  f"Val Loss: {val_metrics['loss']:.4f} | "
-                  f"Train RMSE: {train_metrics['rmse']:.4f} | "
-                  f"Val RMSE: {val_metrics['rmse']:.4f} | "
-                  f"Train R²: {train_metrics['r2']:.3f} | "
-                  f"Val R²: {val_metrics['r2']:.3f} | "
-                  f"LR: {self.optimizer.param_groups[0]['lr']:.6f} | "
-                  f"Time: {train_metrics['epoch_time']:.1f}s "
-                  f"{'*' if is_best else ''}")
-
-            # Early stopping
-            if self.patience_counter >= patience:
-                print(f"Early stopping triggered after {epoch} epochs")
-                print(f"Best epoch: {self.best_epoch}, Best validation loss: {self.best_val_loss:.4f}")
+                patience_counter += 1
+            
+            # 定期保存模型
+            if (epoch + 1) % save_every == 0:
+                checkpoint_path = os.path.join(
+                    self.experiment_path, 
+                    f"checkpoint_epoch_{epoch+1}.pth"
+                )
+                torch.save(self.model.state_dict(), checkpoint_path)
+            
+            # 检查早停条件
+            if patience_counter >= patience:
+                print(f"Early stopping triggered after {epoch+1} epochs")
+                print(f"Best epoch: {epoch+1-patience}, Best validation loss: {best_val_loss:.4f}")
                 break
-
-        # Final evaluation on test set if available
-        if self.test_loader is not None:
-            print("\nEvaluating on test set...")
-            test_metrics = self.validate_epoch(self.test_loader)
-            print(f"Test Results: Loss: {test_metrics['loss']:.4f}, "
-                  f"RMSE: {test_metrics['rmse']:.4f}, "
-                  f"MAE: {test_metrics['mae']:.4f}, "
-                  f"R²: {test_metrics['r2']:.3f}")
-
-        # Save final training history
-        self._save_training_history()
-        self._plot_training_curves()
-
-    def _save_training_history(self):
-        """Save training history to JSON file."""
+        
+        # 保存训练历史
         history_path = os.path.join(self.experiment_path, "training_history.json")
-        with open(history_path, "w") as f:
+        with open(history_path, 'w') as f:
             json.dump(self.train_history, f, indent=2)
-
-    def _plot_training_curves(self):
-        """Plot and save training curves."""
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-
-        # Loss curves
-        axes[0, 0].plot(self.train_history["train_loss"], label="Train Loss")
-        axes[0, 0].plot(self.train_history["val_loss"], label="Validation Loss")
-        axes[0, 0].set_title("Loss Curves")
-        axes[0, 0].set_xlabel("Epoch")
-        axes[0, 0].set_ylabel("Loss")
+        
+        # 绘制训练曲线
+        self.plot_training_curves()
+        
+        # 保存最终模型
+        final_model_path = os.path.join(self.experiment_path, "final_model.pth")
+        torch.save(self.model.state_dict(), final_model_path)
+        
+        print(f"Training curves saved to {os.path.join(self.experiment_path, 'training_curves.png')}")
+    
+    def plot_training_curves(self):
+        """绘制训练曲线"""
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        epochs = range(1, len(self.train_history['train_loss']) + 1)
+        
+        # 损失曲线
+        axes[0, 0].plot(epochs, self.train_history['train_loss'], label='Training Loss')
+        axes[0, 0].plot(epochs, self.train_history['val_loss'], label='Validation Loss')
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].set_title('Training and Validation Loss')
         axes[0, 0].legend()
         axes[0, 0].grid(True)
-
-        # RMSE curves
-        axes[0, 1].plot(self.train_history["train_rmse"], label="Train RMSE")
-        axes[0, 1].plot(self.train_history["val_rmse"], label="Validation RMSE")
-        axes[0, 1].set_title("RMSE Curves")
-        axes[0, 1].set_xlabel("Epoch")
-        axes[0, 1].set_ylabel("RMSE")
+        
+        # RMSE曲线
+        axes[0, 1].plot(epochs, self.train_history['train_rmse'], label='Training RMSE')
+        axes[0, 1].plot(epochs, self.train_history['val_rmse'], label='Validation RMSE')
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('RMSE')
+        axes[0, 1].set_title('Training and Validation RMSE')
         axes[0, 1].legend()
         axes[0, 1].grid(True)
-
-        # R² curves
-        axes[1, 0].plot(self.train_history["train_r2"], label="Train R²")
-        axes[1, 0].plot(self.train_history["val_r2"], label="Validation R²")
-        axes[1, 0].set_title("R² Curves")
-        axes[1, 0].set_xlabel("Epoch")
-        axes[1, 0].set_ylabel("R²")
+        
+        # R²曲线
+        axes[1, 0].plot(epochs, self.train_history['train_r2'], label='Training R²')
+        axes[1, 0].plot(epochs, self.train_history['val_r2'], label='Validation R²')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('R²')
+        axes[1, 0].set_title('Training and Validation R²')
         axes[1, 0].legend()
         axes[1, 0].grid(True)
-
-        # Learning rate curve
-        axes[1, 1].plot(self.train_history["learning_rate"])
-        axes[1, 1].set_title("Learning Rate Schedule")
-        axes[1, 1].set_xlabel("Epoch")
-        axes[1, 1].set_ylabel("Learning Rate")
-        axes[1, 1].set_yscale("log")
+        
+        # 学习率曲线
+        axes[1, 1].plot(epochs, self.train_history['lr'])
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Learning Rate')
+        axes[1, 1].set_title('Learning Rate Schedule')
+        axes[1, 1].set_yscale('log')
         axes[1, 1].grid(True)
-
+        
         plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_path, "training_curves.png"), dpi=300)
+        curve_path = os.path.join(self.experiment_path, "training_curves.png")
+        plt.savefig(curve_path, dpi=300, bbox_inches='tight')
         plt.close()
+    
+    def evaluate(self, data_loader=None):
+        """
+        评估模型性能
+        
+        参数:
+            data_loader (DataLoader): 用于评估的数据加载器，默认使用测试加载器
+            
+        返回:
+            dict: 包含评估指标的字典
+        """
+        if data_loader is None:
+            data_loader = self.test_loader
+            
+        # 使用test方法获取结果
+        _, rmse, r2, all_preds, all_targets = self.test()
+        
+        # 计算其他指标
+        mae = mean_absolute_error(all_targets, all_preds)
+        avg_loss = np.mean((all_preds - all_targets) ** 2)
+        
+        metrics = {
+            'loss': float(avg_loss),
+            'rmse': float(rmse),
+            'mae': float(mae),
+            'r2': float(r2)
+        }
+        
+        return metrics
+    
+    def test(self):
+        """
+        测试模型
+        
+        返回:
+            tuple: (平均损失, RMSE, R², 预测值, 真实值)
+        """
+        self.model.eval()
+        total_loss = 0
+        all_preds = []
+        all_targets = []
+        
+        with torch.no_grad():
+            for batch in self.test_loader:
+                # 将数据移动到设备
+                batch = batch.to(self.device)
+                
+                # 获取目标值
+                targets = batch.y
+                
+                # 前向传播
+                outputs = self.model(batch)
+                
+                # 确保输出和目标形状匹配
+                if targets.dim() == 1:
+                    targets = targets.view(-1, 1)
+                
+                if outputs.shape != targets.shape:
+                    # 如果形状不匹配，尝试调整
+                    if outputs.size(0) == targets.size(0):
+                        # 保持批次大小一致，调整特征维度
+                        targets = targets.view(outputs.shape)
+                    else:
+                        print(f"形状不匹配: outputs {outputs.shape}, targets {targets.shape}")
+                        raise ValueError("输出和目标张量形状不匹配")
+                
+                # 计算损失
+                loss = self.criterion(outputs, targets)
+                total_loss += loss.item()
+                
+                # 收集预测结果和目标值
+                all_preds.extend(outputs.cpu().numpy())
+                all_targets.extend(targets.cpu().numpy())
+        
+        # 计算平均损失
+        avg_loss = total_loss / len(self.test_loader)
+        
+        # 计算RMSE和R²
+        all_preds = np.array(all_preds)
+        all_targets = np.array(all_targets)
+        
+        # 确保数组形状正确
+        if all_preds.ndim == 1:
+            all_preds = all_preds.reshape(-1, 1)
+        if all_targets.ndim == 1:
+            all_targets = all_targets.reshape(-1, 1)
+        
+        rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
+        r2 = r2_score(all_targets, all_preds)
+        
+        return avg_loss, rmse, r2, all_preds, all_targets
 
-        print(f"Training curves saved to {self.experiment_path}/training_curves.png")
-
-
+# Example usage
 if __name__ == "__main__":
-    # Example usage
     from data_loader import load_example_data
     from gcn_model import MolecularGCN
 
