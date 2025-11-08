@@ -1,0 +1,6 @@
+target_id,target_name,target_class
+TAR_001,Target_1,GPCR
+TAR_002,Target_2,Kinase
+TAR_003,Target_3,Ion channel
+TAR_004,Target_4,Enzyme
+TAR_005,Target_5,Transporter

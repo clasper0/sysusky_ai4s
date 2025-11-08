@@ -1,0 +1,13 @@
+{
+    "rf_n_estimators": 100,
+    "rf_max_depth": 14,
+    "rf_min_samples_split": 4,
+    "rf_min_samples_leaf": 3,
+    "gb_n_estimators": 250,
+    "gb_max_depth": 4,
+    "gb_learning_rate": 0.13505604038045438,
+    "xgb_n_estimators": 150,
+    "xgb_max_depth": 6,
+    "xgb_learning_rate": 0.19783519134874863,
+    "ridge_alpha": 6.111605753550594
+}
