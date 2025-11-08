@@ -236,7 +236,7 @@ def perform_cross_validation(model, X, y, cv=5):
         'r2_std': r2_scores.std()
     }
 
-def optimize_model_with_optuna(X_train, y_train, n_trials=50):
+def optimize_model_with_optuna(X_train, y_train, n_trials=200):
     """
     使用Optuna优化模型超参数
     """
