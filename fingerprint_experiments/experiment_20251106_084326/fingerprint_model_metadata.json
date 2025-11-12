@@ -1,0 +1,7 @@
+{
+  "model_type": "xgb",
+  "fingerprint_type": "morgan",
+  "target_columns": [
+    "pIC50"
+  ]
+}

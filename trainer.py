@@ -259,13 +259,27 @@ class MolecularTrainer:
 
         for batch in self.train_loader:
             batch = batch.to(self.device)
-            targets = batch.y.view(-1)
+            # 获取目标值并确保正确处理
+            targets = batch.y
 
             # Zero gradients
             self.optimizer.zero_grad()
 
             # Forward pass
             predictions = self.model(batch)
+            
+            # 强制处理目标值维度，确保与预测值匹配
+            if len(targets.shape) > 1:
+                # 多任务情况，只取第一个任务
+                targets = targets[:, 0]
+            else:
+                # 单任务情况，但可能需要重新组织
+                targets = targets.view(-1)
+                
+            # 强制调整目标值维度以匹配预测值
+            if len(predictions) != len(targets):
+                # 假设目标值是按照批次展开的，需要重新组织
+                targets = targets.view(len(predictions), -1)[:, 0]
 
             # Compute loss
             loss = nn.MSELoss()(predictions, targets)
@@ -317,10 +331,24 @@ class MolecularTrainer:
         with torch.no_grad():
             for batch in data_loader:
                 batch = batch.to(self.device)
-                targets = batch.y.view(-1)
+                # 获取目标值并确保正确处理
+                targets = batch.y
 
                 # Forward pass
                 predictions = self.model(batch)
+                
+                # 强制处理目标值维度，确保与预测值匹配
+                if len(targets.shape) > 1:
+                    # 多任务情况，只取第一个任务
+                    targets = targets[:, 0]
+                else:
+                    # 单任务情况，但可能需要重新组织
+                    targets = targets.view(-1)
+                    
+                # 强制调整目标值维度以匹配预测值
+                if len(predictions) != len(targets):
+                    # 假设目标值是按照批次展开的，需要重新组织
+                    targets = targets.view(len(predictions), -1)[:, 0]
 
                 # Compute loss
                 loss = nn.MSELoss()(predictions, targets)

@@ -31,9 +31,9 @@ def main():
     DESCRIPTOR_COLS = ["MolWt", "LogP", "HBA", "HBD"]
     TEST_SIZE = 0.2
     VAL_SIZE = 0.2
-    BATCH_SIZE = 16
-    EPOCHS = 30000
-    LEARNING_RATE = 0.001
+    BATCH_SIZE = 32  # 增加批次大小
+    EPOCHS = 1000   # 减少训练轮数
+    LEARNING_RATE = 0.0001  # 降低学习率
     DEVICE = "cpu"
     EXPERIMENT_DIR = "experiments"
     EXPERIMENT_NAME = f"experiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}"

@@ -1,0 +1,8 @@
+{
+  "data_path": "../data/candidate_hybrid.csv",
+  "output_dir": "experiments_stacking",
+  "fingerprint_type": "morgan",
+  "n_bits": 2048,
+  "n_features": 1000,
+  "model_type": "stacking"
+}

@@ -145,14 +145,12 @@ def main():
     print(f"  Training samples: {len(train_loader.dataset)}")
     print(f"  Validation samples: {len(val_loader.dataset)}")
     print(f"  Test samples: {len(test_loader.dataset)}")
-    print(f"  Target mean: {stats['target_mean']:.3f}")
-    print(f"  Target std: {stats['target_std']:.3f}")
     print()
 
     # Create model
     print("Creating model...")
     model_params = {
-        "input_dim": args.input_dim,
+        "input_dim": 36,  # 修复：使用实际的特征维度
         "hidden_dims": args.hidden_dims,
         "output_dim": args.output_dim,
         "dropout_rate": args.dropout_rate,

@@ -178,11 +178,11 @@ class MolecularGCN(nn.Module):
         """
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
 
-        # Store initial input for residual connection
-        x_in = x
-
         # Apply GCN, GAT, SAGE, GIN and APPNP layers
         for i in range(len(self.hidden_dims)):
+            # Store input for residual connection
+            x_in = x
+            
             # GCN layer
             x_gcn = self.gcn_layers[i](x, edge_index)
             
@@ -206,11 +206,11 @@ class MolecularGCN(nn.Module):
             x = self.activation(x)
             x = F.dropout(x, p=self.dropout_rate, training=self.training)
 
-            # Residual connection
+            # Residual connection - 修复残差连接实现
             if self.use_residual and i < len(self.gcn_layers) - 1:
                 if x.size(-1) == x_in.size(-1):
                     x = x + x_in
-                x_in = x
+                # 注意：不要在这里更新x_in，它应该保持为该层的输入
 
         # Global pooling with attention
         graph_embedding = self.attention_pooling(x, batch)
@@ -225,6 +225,9 @@ class MolecularGCN(nn.Module):
 
         # Final prediction
         output = self.prediction_head(combined_pool)
+        
+        # 应用tanh激活函数限制输出范围在[-1, 1]之间，有助于稳定训练
+        output = torch.tanh(output)
 
         return output  # Remove squeeze for multi-task support
 
@@ -472,7 +475,8 @@ class MultiTaskMolecularGCN(MolecularGCN):
         predictions = {}
         for task in self.output_dims.keys():
             task_output = self.task_heads[task](shared_embedding)
-            predictions[task] = task_output.squeeze(-1) if task_output.size(-1) == 1 else task_output
+            # 应用tanh激活函数限制输出范围在[-1, 1]之间
+            predictions[task] = torch.tanh(task_output).squeeze(-1) if task_output.size(-1) == 1 else torch.tanh(task_output)
 
         return predictions
 

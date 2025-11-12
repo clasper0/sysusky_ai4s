@@ -1,0 +1,10 @@
+{
+  "data_dir": "data",
+  "model_type": "rf",
+  "fingerprint_type": "morgan",
+  "n_bits": 1024,
+  "test_size": 0.2,
+  "val_size": 0.1,
+  "output_dir": "fingerprint_experiments",
+  "experiment_name": "experiment_20251106_083831"
+}

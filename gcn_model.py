@@ -33,7 +33,7 @@ class MolecularGCN(nn.Module):
 
     def __init__(
         self,
-        input_dim: int = 40,  # 原子特征维度
+        input_dim: int = 36,  # 原子特征维度 (修正为实际的36维)
         hidden_dims: List[int] = [128, 256, 512],  # 隐藏层维度
         output_dim: int = 1,  # 输出维度 (pIC50值)
         dropout_rate: float = 0.2,
@@ -56,9 +56,9 @@ class MolecularGCN(nn.Module):
             attention_heads: Number of attention heads for GAT layers
         """
         super(MolecularGCN, self).__init__()
-
+    #设置模型的输入输出维度、dropout的比例
         self.input_dim = input_dim
-        self.hidden_dims = hidden_dims
+        self.hidden_dims = hidden_dims#一个数组
         self.output_dim = output_dim
         self.dropout_rate = dropout_rate
         self.use_batch_norm = use_batch_norm
@@ -74,11 +74,18 @@ class MolecularGCN(nn.Module):
         else:
             self.activation = F.relu
 
+
+
+
+
         # Build GCN layers
+        #图卷积层
         self.gcn_layers = nn.ModuleList()
+        #图注意力层
         self.gat_layers = nn.ModuleList()
 
-        # Input layer
+        # Input layer输入层
+        #输入维度->第一个Hidden dim
         self.gcn_layers.append(GCNConv(input_dim, hidden_dims[0]))
         self.gat_layers.append(GATConv(hidden_dims[0], hidden_dims[0] // attention_heads,
                                        heads=attention_heads, dropout=dropout_rate))
@@ -100,7 +107,7 @@ class MolecularGCN(nn.Module):
 
         # Prediction heads
         self.prediction_head = nn.Sequential(
-            nn.Linear(hidden_dims[-1] * 3, hidden_dims[-1] // 2),  # 3 pooling types concatenated
+            nn.Linear(hidden_dims[-1] * 4, hidden_dims[-1] // 2),  # 4 pooling types concatenated
             nn.Dropout(dropout_rate),
             self._get_activation_layer(),
             nn.Linear(hidden_dims[-1] // 2, output_dim)
@@ -109,6 +116,7 @@ class MolecularGCN(nn.Module):
         # Initialize weights
         self._initialize_weights()
 
+    #Jihuohanshu
     def _get_activation_layer(self):
         """Get activation layer based on configuration."""
         if isinstance(self.activation, type(F.relu)):
@@ -122,8 +130,8 @@ class MolecularGCN(nn.Module):
 
     def _initialize_weights(self):
         """Initialize model weights."""
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
+        for m in self.modules():#遍历
+            if isinstance(m, nn.Linear):#全连接层
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
@@ -149,13 +157,13 @@ class MolecularGCN(nn.Module):
         # Apply GCN and GAT layers
         for i, (gcn_layer, gat_layer) in enumerate(zip(self.gcn_layers, self.gat_layers)):
             # GCN layer
-            x = gcn_layer(x, edge_index, edge_attr)
+            x = gcn_layer(x, edge_index)  # 修复：不传递edge_attr参数
 
             # Apply batch norm if enabled
             if self.use_batch_norm and i < len(self.batch_norms):
                 x = self.batch_norms[i](x)
 
-            # Apply activation and dropout
+            # Apply activation and dropout 随机关闭神经元
             x = self.activation(x)
             x = F.dropout(x, p=self.dropout_rate, training=self.training)
 
@@ -183,7 +191,7 @@ class MolecularGCN(nn.Module):
         # Final prediction
         output = self.prediction_head(combined_pool)
 
-        return output.squeeze(-1)  # Remove last dimension for regression
+        return output.view(-1)  # Ensure correct output shape for regression
 
 
 class AttentionPooling(nn.Module):
@@ -350,6 +358,12 @@ def create_model(model_type: str = "single_task", **kwargs) -> nn.Module:
         raise ValueError(f"Unknown model type: {model_type}")
 
 
+
+
+
+
+
+
 if __name__ == "__main__":
     # Example usage
     model = MolecularGCN(
@@ -358,6 +372,11 @@ if __name__ == "__main__":
         output_dim=1,
         dropout_rate=0.2
     )
+
+
+
+
+
 
     print("Model architecture:")
     print(model)

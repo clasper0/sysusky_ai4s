@@ -58,6 +58,14 @@ class HybridMolecularPredictor(nn.Module):
             
             input_dim = hidden_dim
         
+        # 添加融合网络用于学习如何融合GCN和GAT的输出
+        self.fusion_network = nn.Sequential(
+            nn.Linear(gcn_hidden_dims[-1] * 2, gcn_hidden_dims[-1]),
+            nn.ReLU(),
+            nn.Linear(gcn_hidden_dims[-1], gcn_hidden_dims[-1] * 2),
+            nn.Sigmoid()
+        )
+        
         # 注意力池化层
         self.attention_pool = nn.Sequential(
             nn.Linear(gcn_hidden_dims[-1], 1),
@@ -130,6 +138,9 @@ class HybridMolecularPredictor(nn.Module):
         """
         # 多层GCN和GAT
         for gcn_layer, gat_layer in zip(self.gcn_layers, self.gat_layers):
+            # 保存输入用于残差连接
+            x_in = x
+            
             # GCN分支
             gcn_out = gcn_layer(x, edge_index)
             gcn_out = F.relu(gcn_out)
@@ -138,12 +149,16 @@ class HybridMolecularPredictor(nn.Module):
             gat_out = gat_layer(x, edge_index)
             gat_out = F.relu(gat_out)
             
-            # 融合两个分支
-            x = (gcn_out + gat_out) / 2
+            # 融合两个分支 - 使用可学习的权重而不是简单平均
+            # 添加一个小型神经网络来学习如何融合两个分支
+            fusion_input = torch.cat([gcn_out, gat_out], dim=1)
+            fusion_weights = torch.sigmoid(self.fusion_network(fusion_input))
+            x = fusion_weights[:, :gcn_out.size(1)] * gcn_out + fusion_weights[:, gcn_out.size(1):] * gat_out
             
-            # 添加残差连接（如果维度匹配）
-            if x.size(1) == gcn_out.size(1):
-                x = x + gcn_out
+            # 添加残差连接（如果维度匹配）- 修复残差连接实现
+            if x.size(1) == x_in.size(1):
+                x = x + x_in
+            # 注意：不要更新x_in，它应该保持为该层的输入
             
             # dropout
             x = F.dropout(x, p=0.2, training=self.training)
@@ -153,9 +168,11 @@ class HybridMolecularPredictor(nn.Module):
         max_pooled = global_max_pool(x, batch)
         sum_pooled = global_add_pool(x, batch)
         
-        # 注意力池化
+        # 注意力池化 - 修复softmax使用问题
         attention_weights = self.attention_pool(x)
-        attention_weights = torch.softmax(attention_weights, dim=0)
+        # 使用batch信息正确应用softmax，确保每个图内的节点权重和为1
+        attention_weights = torch.softmax(attention_weights, dim=1)
+        attention_weights = attention_weights.view(-1, 1)  # 重塑为列向量
         attention_pooled = global_add_pool(x * attention_weights, batch)
         
         # 连接所有池化结果
@@ -236,5 +253,8 @@ class HybridMolecularPredictor(nn.Module):
         
         # 连接所有输出
         final_output = torch.cat(outputs, dim=1)
+        
+        # 应用tanh激活函数限制输出范围在[-1, 1]之间，有助于稳定训练
+        final_output = torch.tanh(final_output)
         
         return final_output

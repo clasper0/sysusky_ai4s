@@ -1,0 +1,10 @@
+{
+  "data_dir": "data",
+  "fingerprint_type": "morgan",
+  "n_bits": 2048,
+  "test_size": 0.2,
+  "val_size": 0.1,
+  "output_dir": "single_target_experiments",
+  "experiment_name": "experiment_20251106_164820",
+  "target": "TAR_001"
+}
