@@ -55,7 +55,7 @@ def build_final_optimized_model():
         ('gradient_boosting', gb),
         ('xgboost', xgb_model),
         ('ridge', ridge)
-    ], weights=[1, 1.2, 1.3, 0.5])
+    ], weights=[0.204, 1.989, 0.917, 0.229])
     
     return ensemble_model
 
@@ -190,7 +190,7 @@ def predict_candidates(model, le_target, selected_features_indices, scaler, sele
 
 def analyze_model_performance_by_target(model, X_test, y_test, original_data, test_indices):
     """
-    按靶点分析模型性能
+    按靶点分析模型性能，并保存预测结果用于绘图
     """
     print("\nPerformance by Target:")
     print("-" * 30)
@@ -199,6 +199,15 @@ def analyze_model_performance_by_target(model, X_test, y_test, original_data, te
     test_data = original_data.iloc[test_indices].copy()
     
     y_pred = model.predict(X_test)
+    
+    # 保存预测结果用于绘图
+    plot_data = pd.DataFrame({
+        'actual': y_test,
+        'predicted': y_pred,
+        'target_id': test_data['target_id'].values
+    })
+    plot_data.to_csv('output/model_predictions_for_plotting.csv', index=False)
+    print("预测结果已保存至 output/model_predictions_for_plotting.csv，可用于绘图")
     
     for target_id in test_data['target_id'].unique():
         mask = test_data['target_id'] == target_id
