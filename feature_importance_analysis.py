@@ -14,10 +14,12 @@ def load_data():
     """
     # 读取训练数据
     activity_df = pd.read_csv('data/activity_train.csv')
-    features_df = pd.read_csv('data/molecular_features_extended.csv')
+    features_df = pd.read_csv('data/candidate_hybrid_Extended.csv')
+    molecule_df = pd.read_csv('data/molecule.smi', header=None, names=['molecule_id', 'SMILES'])
     
-    # 合并训练数据
-    train_data = pd.merge(activity_df, features_df, on='molecule_id', how='left')
+    # 合并训练数据 - 先将activity_df与molecule_df合并获取SMILES，再与features_df合并
+    train_data = pd.merge(activity_df, molecule_df, on='molecule_id', how='left')
+    train_data = pd.merge(train_data, features_df, on='SMILES', how='left')
     
     return train_data
 
@@ -29,8 +31,11 @@ def prepare_features(data):
     le_target = LabelEncoder()
     data['target_id_encoded'] = le_target.fit_transform(data['target_id'])
     
-    # 准备特征列
-    feature_columns = [f'feature_{i}' for i in range(1074)]
+    # 准备特征列 - 使用实际的RDKit描述符列名而不是假定的feature_i格式
+    exclude_columns = ['SMILES', 'molecule_id', 'target_id', 'target_id_encoded', 'pIC50']
+    exclude_columns.extend([col for col in data.columns if 'target' in col and 'pIC50' in col])
+    
+    feature_columns = [col for col in data.columns if col not in exclude_columns]
     features = ['target_id_encoded'] + feature_columns
     
     X = data[features]
@@ -60,9 +65,11 @@ def analyze_feature_importance_by_target(X, y, le_target, train_data):
             print(f"  跳过靶点 {target_id}，数据量不足")
             continue
             
-        # 准备特征
-        feature_columns = [f'feature_{i}' for i in range(1074)]
-        features = feature_columns
+        # 准备特征 - 使用实际的RDKit描述符列名
+        exclude_columns = ['SMILES', 'molecule_id', 'target_id', 'target_id_encoded', 'pIC50']
+        exclude_columns.extend([col for col in target_data.columns if 'target' in col and 'pIC50' in col])
+        
+        features = [col for col in target_data.columns if col not in exclude_columns]
         X_target = target_data[features]
         y_target = target_data['pIC50']
         
@@ -100,11 +107,18 @@ def create_feature_importance_heatmap(target_importances, top_n=20):
     """
     print("创建特征重要性热力图...")
     
-    # 获取所有靶点的Top N特征
+    # 获取所有靶点的Top N特征，并统计全局高频特征用于排序
     all_top_features = set()
+    feature_frequency = {}
+    
     for target_id, importance_df in target_importances.items():
         top_features = importance_df.head(top_n)['feature'].tolist()
         all_top_features.update(top_features)
+        for feat in top_features:
+            feature_frequency[feat] = feature_frequency.get(feat, 0) + 1
+    
+    # 按频率和字母排序特征列，提升热力图可读性
+    sorted_features = sorted(all_top_features, key=lambda x: (-feature_frequency[x], x))
     
     # 创建热力图数据
     heatmap_data = []
@@ -113,26 +127,20 @@ def create_feature_importance_heatmap(target_importances, top_n=20):
     for target_id, importance_df in target_importances.items():
         heatmap_index.append(target_id)
         feature_dict = dict(zip(importance_df['feature'], importance_df['importance']))
-        
-        row_data = []
-        for feature in all_top_features:
-            row_data.append(feature_dict.get(feature, 0))
-        
+        row_data = [feature_dict.get(feature, 0) for feature in sorted_features]
         heatmap_data.append(row_data)
     
     # 转换为DataFrame
-    heatmap_df = pd.DataFrame(
-        heatmap_data, 
-        columns=list(all_top_features), 
-        index=heatmap_index
-    )
+    heatmap_df = pd.DataFrame(heatmap_data, columns=sorted_features, index=heatmap_index)
     
     # 绘制热力图
-    plt.figure(figsize=(20, 8))
-    sns.heatmap(heatmap_df, annot=False, cmap='YlOrRd', cbar=True)
-    plt.title('Top Feature Importances by Target')
-    plt.xlabel('Features')
-    plt.ylabel('Targets')
+    plt.figure(figsize=(max(16, len(sorted_features) * 0.6), 8))
+    sns.heatmap(heatmap_df, annot=False, cmap='YlOrRd', cbar_kws={'label': 'Importance'})
+    plt.title('Top Feature Importances by Target', fontsize=16)
+    plt.xlabel('Features', fontsize=12)
+    plt.ylabel('Targets', fontsize=12)
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
     plt.tight_layout()
     plt.savefig('output/feature_importance_heatmap.png', dpi=300, bbox_inches='tight')
     plt.close()
@@ -162,8 +170,8 @@ def analyze_high_activity_molecules(train_data, target_importances, top_n=5):
         # 按pIC50排序，获取高活性分子
         high_activity_molecules = target_data.nlargest(10, 'pIC50')
         
-        # 保存高活性分子信息
-        high_activity_molecules[['molecule_id', 'pIC50']].to_csv(
+        # 保存高活性分子信息 - 现在应该有正确的SMILES列
+        high_activity_molecules[['SMILES', 'pIC50']].to_csv(
             f'output/high_activity_molecules_{target_id}.csv', 
             index=False
         )
@@ -173,8 +181,11 @@ def analyze_high_activity_molecules(train_data, target_importances, top_n=5):
         # 分析这些高活性分子的重要特征
         top_features = target_importances[target_id].head(top_n)
         
-        # 获取这些分子的特征值
-        feature_columns = [f'feature_{i}' for i in range(1074)]
+        # 获取这些分子的特征值 - 使用实际的特征列名
+        exclude_columns = ['SMILES', 'molecule_id', 'target_id', 'target_id_encoded', 'pIC50']
+        exclude_columns.extend([col for col in target_data.columns if 'target' in col and 'pIC50' in col])
+        feature_columns = [col for col in target_data.columns if col not in exclude_columns]
+        
         high_activity_features = high_activity_molecules[feature_columns]
         
         # 计算平均特征值
