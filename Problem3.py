@@ -424,7 +424,7 @@ def main():
         print("Quick eval on hold-out: RMSE=", np.sqrt(mean_squared_error(y_test, y_pred)), "R2=", r2_score(y_test, y_pred))
 
     # compute per-target permutation importances
-    print("Detecting fingerprint columns (if present) in train features...")
+    print("Detecting fingerprint columns in train features...")
     fingerprint_columns = detect_fingerprint_columns(pd.read_csv('data/train_features_extended.csv'))
 
     print("Computing permutation importances per target (may take time)...")
