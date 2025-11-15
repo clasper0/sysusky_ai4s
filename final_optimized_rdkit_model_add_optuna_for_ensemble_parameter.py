@@ -7,7 +7,9 @@ from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.feature_selection import SelectKBest, f_regression
 import xgboost as xgb
+from sklearn.metrics import mean_absolute_error
 import warnings
+from scipy.stats import pearsonr, spearmanr
 warnings.filterwarnings('ignore')
 
 # 新增optuna导入
@@ -102,7 +104,7 @@ def build_final_optimized_model(rf_weight=1, gb_weight=1.2, xgb_weight=1.3, ridg
 
 def evaluate_model(model, X_test, y_test):
     """
-    评估模型性能
+    评估模型性能，包括Pearson、Spearman相关系数和MAE
     """
     # 预测
     y_pred = model.predict(X_test)
@@ -111,11 +113,19 @@ def evaluate_model(model, X_test, y_test):
     mse = mean_squared_error(y_test, y_pred)
     rmse = np.sqrt(mse)
     r2 = r2_score(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)  # 新增MAE计算
+    
+    # 计算Pearson和Spearman相关系数
+    pearson_corr, pearson_p = pearsonr(y_test, y_pred)
+    spearman_corr, spearman_p = spearmanr(y_test, y_pred)
     
     print(f"Root Mean Squared Error: {rmse:.4f}")
+    print(f"Mean Absolute Error: {mae:.4f}")  # 新增MAE输出
     print(f"R² Score: {r2:.4f}")
+    print(f"Pearson Correlation Coefficient: {pearson_corr:.4f} (p-value: {pearson_p:.4f})")
+    print(f"Spearman Rank Correlation: {spearman_corr:.4f} (p-value: {spearman_p:.4f})")
     
-    return y_pred
+    return y_pred, pearson_corr, spearman_corr, mae  # 返回MAE
 
 def cross_validation(model, X, y):
     """
@@ -389,7 +399,7 @@ def main():
     model.fit(X_train, y_train)
     
     print("Evaluating ensemble model...")
-    evaluate_model(model, X_test, y_test)
+    y_pred, pearson_corr, spearman_corr, mae = evaluate_model(model, X_test, y_test) 
     
     print("Performing cross-validation...")
     cross_validation(model, X_selected, y)
