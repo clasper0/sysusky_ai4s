@@ -180,7 +180,7 @@ def build_or_load_ensemble(model_path="output/final_ensemble.pkl"):
         ('gradient_boosting', gb),
         ('xgboost', xgb_model),
         ('ridge', ridge)
-    ], weights=[1, 1.2, 1.3, 0.5])  # default weights if not optimized externally
+    ], weights=[0.410, 1.941, 1.643, 1.495]) 
     return model
 
 
@@ -213,13 +213,10 @@ def compute_permutation_importances_per_target(model, X_selected_df, y, merged_d
     for t in targets:
         mask = merged_df['target_id'] == t
         if mask.sum() < 10:
-            # 少样本时跳过或仍计算但提醒
             print(f"Warning: target {t} has only {mask.sum()} samples — permutation importance may be noisy.")
         X_sub = X_selected_df.loc[mask, :].values
         y_sub = merged_df.loc[mask, 'pIC50'].values
         if len(y_sub) < 3:
-            # 太少了没法做置换重要性
-            # 仍放入 zeros
             importance_by_target[t] = pd.Series(0.0, index=feat_cols)
             continue
         # permutation importance (on subset)
@@ -277,9 +274,7 @@ def plot_heatmap(mat_df, out_png=os.path.join(OUTPUT_DIR, "feature_importance_he
     print(f"Saved heatmap to {out_png}")
 
 
-# --- Fragment explanation utilities -----------------------------------------
 SMARTS_FOR_FR_FEATURES = {
-    # 几个示例映射（fr_ 前缀项的化学意义）
     'fr_nitro': '–NO2 (nitro group)',
     'fr_phenol': 'phenolic –OH on aromatic ring',
     'fr_ester': 'ester group (R–COO–R)',
@@ -288,10 +283,7 @@ SMARTS_FOR_FR_FEATURES = {
     'fr_halogen': 'halogen atom (F/Cl/Br/I)',
     'fr_ketone': 'carbonyl in ketone (R–CO–R)',
     'fr_amide': 'amide (R–C(=O)–NR2)',
-    # 你可以继续补充
 }
-# ---------------------------------------------------------------------------
-
 
 def fragment_interpretation_and_visualization(top_pred_df, selected_feature_names, fingerprint_columns, merged_df):
     """

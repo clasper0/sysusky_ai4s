@@ -44,33 +44,5 @@ def generate_rdkit_features(input_file, output_file, max_features=1074):
     
     return result_df
 
-def create_feature_mapping():
-    """
-    创建特征名称映射文件
-    """
-    # 初始化RDKit特征生成器
-    rdkit_feat = RDKitDescriptors()
-    
-    # 获取所有特征名称
-    descriptors = rdkit_feat.descriptors
-    
-    # 创建映射DataFrame
-    mapping_data = []
-    for i, name in enumerate(descriptors):
-        mapping_data.append({
-            'feature_index': i,
-            'feature_id': f'feature_{i}',
-            'descriptor_name': name
-        })
-    
-    mapping_df = pd.DataFrame(mapping_data)
-    mapping_df.to_csv('data/rdkit_feature_mapping.csv', index=False)
-    print(f"特征映射已保存到 data/rdkit_feature_mapping.csv")
-    print(f"总共 {len(mapping_df)} 个特征")
-    return mapping_df
-
-# 创建特征映射
-#create_feature_mapping()
-
 # 生成特征
 generate_rdkit_features('data/molecule.smi', 'data/train_features_extended.csv')
