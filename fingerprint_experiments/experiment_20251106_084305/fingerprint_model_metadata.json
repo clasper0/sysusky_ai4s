@@ -1,7 +1,0 @@
-{
-  "model_type": "rf",
-  "fingerprint_type": "morgan",
-  "target_columns": [
-    "pIC50"
-  ]
-}
